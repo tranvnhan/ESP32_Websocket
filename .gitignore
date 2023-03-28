@@ -6,3 +6,4 @@
 include/secrets.h
 .vscode/extensions.json
 .DS_Store
+.vscode
