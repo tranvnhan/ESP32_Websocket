@@ -1,7 +1,9 @@
 // Adapted from:
 // https://randomnerdtutorials.com/esp32-websocket-server-arduino/
 // https://m1cr0lab-esp32.github.io/remote-control-with-websocket/
+// https://lastminuteengineers.com/handling-esp32-gpio-interrupts-tutorial/
 
+// TODO: refactor TFT display code as optional, i.e. using define statement
 // TODO: add project description
 
 
@@ -14,7 +16,8 @@
 #include <ESPAsyncWebServer.h>
 #include <secrets.h>
 
-const uint8_t DEBOUNCE_DELAY = 10; // in milliseconds
+#define DEBOUNCE_DELAY  250 // in milliseconds
+#define KEY_BTN_PIN     14 // Key button is attached to GPIO pin 14
 
 bool ledState = 0;
 bool stateChanged = false;  // whether state of LED has changed or not
@@ -209,54 +212,30 @@ TFT_eSPI tft = TFT_eSPI();
 // Definition of the Button component
 // ----------------------------------------------------------------------------
 struct Button {
-    // state variables
     uint8_t  pin;
-    bool     lastReading;
+    uint32_t currentTime;
     uint32_t lastDebounceTime;
-    uint16_t state;
-
-    // methods determining the logical state of the button
-    bool pressed()                { return state == 1; }
-    bool released()               { return state == 0xffff; }
-    bool held(uint16_t count = 0) { return state > 1 + count && state < 0xffff; }
-
-    // method for reading the physical state of the button
-    void read() {
-        // reads the voltage on the pin connected to the button
-        bool reading = digitalRead(pin);
-
-        // if the logic level has changed since the last reading,
-        // we reset the timer which counts down the necessary time
-        // beyond which we can consider that the bouncing effect
-        // has passed.
-        if (reading != lastReading) {
-            lastDebounceTime = millis();
-        }
-
-        // from the moment we're out of the bouncing phase
-        // the actual status of the button can be determined
-        if (millis() - lastDebounceTime > DEBOUNCE_DELAY) {
-            // don't forget that the read pin is pulled-up
-            bool pressed = reading == LOW;
-            if (pressed) {
-                     if (state  < 0xfffe) state++;
-                else if (state == 0xfffe) state = 2;
-            } else if (state) {
-                state = state == 0xffff ? 0 : 0xffff;
-            }
-        }
-
-        // finally, each new reading is saved
-        lastReading = reading;
-    }
+    bool     pressed;
+    uint32_t numberKeyPresses;  // for DEBUG
 };
 
-Button button = { 14, HIGH, 0, 0 };
+Button key_btn = { KEY_BTN_PIN, 0, 0, false, 0};
 
+void IRAM_ATTR key_btn_isr() {
+  key_btn.currentTime = millis();
+  if (millis() - key_btn.lastDebounceTime > DEBOUNCE_DELAY) {
+      key_btn.pressed = true;
+      key_btn.numberKeyPresses++;
+      key_btn.lastDebounceTime = key_btn.currentTime;
+  }
+}
 
 void setup() {
   // GPIO
-  pinMode(button.pin, INPUT);  
+  pinMode(key_btn.pin, INPUT);  
+
+  // Interrupt setup
+  attachInterrupt(KEY_BTN_PIN, key_btn_isr, FALLING);
 
   // Start TFT display
   tft.init();
@@ -312,12 +291,11 @@ void setup() {
 void loop() {
   ws.cleanupClients();
 
-  // TODO: do this using Interrupt
-  // Get physical button state
-  button.read();
-  if (button.pressed()){
+  if (key_btn.pressed){
+    // DEBUG: Serial.printf("Key button has been pressed %u times\n", key_btn.numberKeyPresses);
     ledState = !ledState;
     stateChanged = true;
+    key_btn.pressed = false;
     // notify clients about this change
     Serial.println("LED state is changed by physical button");
     notifyClients();
